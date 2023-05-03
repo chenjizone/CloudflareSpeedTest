@@ -157,6 +157,6 @@ if __name__ == '__main__':
     config = SysConfig()
     print("Config is:", config.dict())
     # start cron job
-    schedule.every(config.exec_interval_minutes).seconds.do(start_job, config)
+    schedule.every(config.exec_interval_minutes).minutes.do(start_job, config)
     while True:
         schedule.run_pending()
