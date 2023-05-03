@@ -1,4 +1,4 @@
 schedule
 pydantic
-tencentcloud-sdk-python
+tencentcloud-sdk-python-common
 tencentcloud-sdk-python-dnspod

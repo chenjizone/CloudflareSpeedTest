@@ -2,7 +2,7 @@
 # coding=utf-8
 import subprocess
 from pydantic import BaseSettings
-# import schedule
+import schedule
 import os
 import json
 import traceback
@@ -18,6 +18,7 @@ BIN = "./CloudflareST"
 class SysConfig(BaseSettings):
     exec_interval_minutes: int = 10
     exec_cmd_timeout_seconds: int = 300
+    exec_expected_minimum_speed_mb: float = 10
 
 
 class DnsPodProvider(BaseSettings):
@@ -36,35 +37,61 @@ class DnsPodService(object):
     def __init__(self):
         self.config = DnsPodProvider()
         self.client = self._new_client(self.config)
+        self.subDomain, self.mainDomain = self._parse_domain(
+            self.config.domain)
+        self.line = self.config.line
 
     def _new_client(self, config):
         cred = credential.Credential(config.ak, config.sk)
         httpProfile = HttpProfile()
         httpProfile.endpoint = config.endpoint
-        httpProfile.keepAlive = False
         clientProfile = ClientProfile()
         clientProfile.httpProfile = httpProfile
         client = dnspod_client.DnspodClient(cred, "", clientProfile)
         return client
 
     def _get_record_id(self):
-        subDomain, domain = self._parse_domain(self.config.domain)
         req = models.DescribeRecordListRequest()
         params = {
-            "Domain": domain,
-            "Subdomain": subDomain,
+            "Domain": self.mainDomain,
+            "Subdomain": self.subDomain,
             "RecordType": "A",
-            "RecordLine": self.config.line
+            "RecordLine": self.line
         }
         req.from_json_string(json.dumps(params))
         resp = self.client.DescribeRecordList(req)
-        print(resp.to_json_string())
+        recordId = None
+        for record in resp.RecordList:
+            recordId = record.RecordId
+            print("Exists record is:", resp.to_json_string())
+        return recordId
 
     def _update_record(self, recordId, newIp):
-        pass
+        req = models.ModifyRecordRequest()
+        params = {
+            "Domain": self.mainDomain,
+            "SubDomain": self.subDomain,
+            "RecordType": "A",
+            "RecordLine": self.line,
+            "Value": newIp,
+            "RecordId": recordId
+        }
+        req.from_json_string(json.dumps(params))
+        resp = self.client.ModifyRecord(req)
+        print("Modified response is:", resp.to_json_string())
 
     def _create_record(self, ip):
-        pass
+        req = models.CreateRecordRequest()
+        params = {
+            "Domain": self.mainDomain,
+            "SubDomain": self.subDomain,
+            "RecordType": "A",
+            "RecordLine": self.line,
+            "Value": ip
+        }
+        req.from_json_string(json.dumps(params))
+        resp = self.client.CreateRecord(req)
+        print("Created response is:", resp.to_json_string())
 
     def _parse_domain(self, domain):
         return str(domain).split(".", 1)
@@ -72,25 +99,38 @@ class DnsPodService(object):
     def update_dns(self, ip):
         existsRecordId = self._get_record_id()
         if existsRecordId:
-            self._update_record(ip)
+            self._update_record(existsRecordId, ip)
         else:
             self._create_record(ip)
 
 
-def get_best_ip(file):
-    pass
+def get_best_ip(fp, expectedSpeed):
+    lineNo = 0
+    bestIp = None
+    bestSpeed = 0
+    for line in fp:
+        lineNo += 1
+        if lineNo == 1:
+            continue
+        lineItems = line.strip().split(",")
+        ip = lineItems[0]
+        speed = lineItems[len(lineItems) - 1]
+        if float(speed) > float(expectedSpeed):
+            bestIp = ip
+            bestSpeed = speed
+        break
+    return bestIp, bestSpeed
 
 
-def start_job(sysConfig):
+def start_job(sysConfig: SysConfig):
     print("Starting test task...")
     try:
-        runCode = subprocess.call([BIN, "-o", RESULT_PATH],
-                                  shell=True,
-                                  stdout=subprocess.PIPE,
-                                  stderr=subprocess.STDOUT,
-                                  timeout=sysConfig.exec_cmd_timeout_seconds)
-        if runCode != 0:
-            print("Execute failed, code: %s" % runCode)
+        runRet = subprocess.run([BIN, "-o", RESULT_PATH],
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT,
+                                timeout=sysConfig.exec_cmd_timeout_seconds)
+        if runRet.returncode != 0:
+            print("Execute failed, code: %d" % runRet.returncode)
             return
         if not os.path.exists(RESULT_PATH):
             print("No result file")
@@ -99,13 +139,15 @@ def start_job(sysConfig):
             print("Result file is empty")
             return
         with open(RESULT_PATH) as f:
-            bestIp = get_best_ip(f)
+            bestIp, bestSpeed = get_best_ip(
+                f, sysConfig.exec_expected_minimum_speed_mb)
         if not bestIp or len(bestIp) == 0:
             print("No best IP found")
             return
+        print("Best IP found: %s, speed: %sMB/s" % (bestIp, bestSpeed))
         dnspodService = DnsPodService()
-        dnspodService.set_best_ip(bestIp)
-        print("Best IP found: %s, update dns record success..." % bestIp)
+        dnspodService.update_dns(bestIp)
+        print("Task execution complete...")
     except BaseException:
         traceback.print_exc()
 
@@ -113,10 +155,8 @@ def start_job(sysConfig):
 if __name__ == '__main__':
     # load configuration
     config = SysConfig()
-    # print("Config is", config.dict())
-    # # start cron job
-    # schedule.every(config.run_interval_minutes).seconds.do(start_job, config)
-    # while True:
-    #     schedule.run_pending()
-    dnspodService = DnsPodService()
-    dnspodService.update_dns("198.41.195.7")
+    print("Config is:", config.dict())
+    # start cron job
+    schedule.every(config.exec_interval_minutes).seconds.do(start_job, config)
+    while True:
+        schedule.run_pending()
