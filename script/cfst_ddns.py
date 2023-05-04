@@ -131,6 +131,8 @@ def start_job(sysConfig: SysConfig):
                                 timeout=sysConfig.exec_cmd_timeout_seconds)
         if runRet.returncode != 0:
             print("Execute failed, code: %d" % runRet.returncode)
+            for line in runRet.stdout.splitlines():
+                print(line)
             return
         if not os.path.exists(RESULT_PATH):
             print("No result file")
