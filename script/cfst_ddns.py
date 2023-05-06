@@ -10,9 +10,9 @@ from tencentcloud.common import credential
 from tencentcloud.common.profile.client_profile import ClientProfile
 from tencentcloud.common.profile.http_profile import HttpProfile
 from tencentcloud.dnspod.v20210323 import dnspod_client, models
-import ssl
+# import ssl
 
-ssl._create_default_https_context = ssl._create_unverified_context
+# ssl._create_default_https_context = ssl._create_unverified_context
 
 RESULT_PATH = "./cloudflare_result.txt"
 BIN = "./CloudflareST"
@@ -82,7 +82,6 @@ class DnsPodService(object):
         recordIp = None
         for record in resp.RecordList:
             recordIp = record.Value
-            print("Current record ip is:", recordIp)
         return recordIp
 
     def _update_record(self, recordId, newIp):
@@ -156,9 +155,15 @@ def get_speed_by_ip(fp, currentIp, expectedSpeed):
     return currentSpeed
 
 
+def clean_result(fn):
+    if os.path.exists(fn):
+        os.remove(fn)
+
+
 def start_job(sysConfig: SysConfig):
     print("Starting test task...")
     try:
+        clean_result(RESULT_PATH)
         dnspodService = DnsPodService()
         currentIp = dnspodService._get_record_ip()
         runRet = subprocess.run([BIN, "-o", RESULT_PATH, "-ip", currentIp],
@@ -170,14 +175,18 @@ def start_job(sysConfig: SysConfig):
             for line in runRet.stdout.splitlines():
                 print(line)
             return
-        with open(RESULT_PATH) as f:
-            currentSpeed = get_speed_by_ip(
-                f, currentIp, sysConfig.exec_expected_minimum_speed_mb)
-            if currentSpeed:
-                print(
-                    "Task complete, current ip: %s, speed:%sMB/s ,no need to continue"
-                    % (currentIp, currentSpeed))
-                return
+        if os.path.exists(RESULT_PATH):
+            with open(RESULT_PATH) as f:
+                currentSpeed = get_speed_by_ip(
+                    f, currentIp, sysConfig.exec_expected_minimum_speed_mb)
+                if currentSpeed:
+                    print(
+                        "Task complete, current ip: %s, speed:%sMB/s ,no need to continue"
+                        % (currentIp, currentSpeed))
+                    return
+        print("Current ip: %s maybe unavailable, start select new IP" %
+              currentIp)
+        clean_result(RESULT_PATH)
         runRet = subprocess.run([BIN, "-o", RESULT_PATH],
                                 stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT,
