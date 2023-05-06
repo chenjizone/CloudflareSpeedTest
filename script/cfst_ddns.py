@@ -10,15 +10,18 @@ from tencentcloud.common import credential
 from tencentcloud.common.profile.client_profile import ClientProfile
 from tencentcloud.common.profile.http_profile import HttpProfile
 from tencentcloud.dnspod.v20210323 import dnspod_client, models
+import ssl
 
-RESULT_PATH = "/tmp/cloudflare_result.txt"
+ssl._create_default_https_context = ssl._create_unverified_context
+
+RESULT_PATH = "./cloudflare_result.txt"
 BIN = "./CloudflareST"
 
 
 class SysConfig(BaseSettings):
     exec_interval_minutes: int = 10
     exec_cmd_timeout_seconds: int = 300
-    exec_expected_minimum_speed_mb: float = 10
+    exec_expected_minimum_speed_mb: float = 15
 
 
 class DnsPodProvider(BaseSettings):
@@ -66,6 +69,22 @@ class DnsPodService(object):
             print("Exists record is:", resp.to_json_string())
         return recordId
 
+    def _get_record_ip(self):
+        req = models.DescribeRecordListRequest()
+        params = {
+            "Domain": self.mainDomain,
+            "Subdomain": self.subDomain,
+            "RecordType": "A",
+            "RecordLine": self.line
+        }
+        req.from_json_string(json.dumps(params))
+        resp = self.client.DescribeRecordList(req)
+        recordIp = None
+        for record in resp.RecordList:
+            recordIp = record.Value
+            print("Current record ip is:", recordIp)
+        return recordIp
+
     def _update_record(self, recordId, newIp):
         req = models.ModifyRecordRequest()
         params = {
@@ -78,7 +97,7 @@ class DnsPodService(object):
         }
         req.from_json_string(json.dumps(params))
         resp = self.client.ModifyRecord(req)
-        print("Modified response is:", resp.to_json_string())
+        print("Modified success, response is:", resp.to_json_string())
 
     def _create_record(self, ip):
         req = models.CreateRecordRequest()
@@ -91,7 +110,7 @@ class DnsPodService(object):
         }
         req.from_json_string(json.dumps(params))
         resp = self.client.CreateRecord(req)
-        print("Created response is:", resp.to_json_string())
+        print("Created success, response is:", resp.to_json_string())
 
     def _parse_domain(self, domain):
         return str(domain).split(".", 1)
@@ -122,9 +141,43 @@ def get_best_ip(fp, expectedSpeed):
     return bestIp, bestSpeed
 
 
+def get_speed_by_ip(fp, currentIp, expectedSpeed):
+    lineNo = 0
+    currentSpeed = None
+    for line in fp:
+        lineNo += 1
+        if lineNo == 1:
+            continue
+        lineItems = line.strip().split(",")
+        ip = lineItems[0]
+        speed = lineItems[len(lineItems) - 1]
+        if ip == currentIp and float(speed) > float(expectedSpeed):
+            return speed
+    return currentSpeed
+
+
 def start_job(sysConfig: SysConfig):
     print("Starting test task...")
     try:
+        dnspodService = DnsPodService()
+        currentIp = dnspodService._get_record_ip()
+        runRet = subprocess.run([BIN, "-o", RESULT_PATH, "-ip", currentIp],
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT,
+                                timeout=sysConfig.exec_cmd_timeout_seconds)
+        if runRet.returncode != 0:
+            print("Execute failed, code: %d" % runRet.returncode)
+            for line in runRet.stdout.splitlines():
+                print(line)
+            return
+        with open(RESULT_PATH) as f:
+            currentSpeed = get_speed_by_ip(
+                f, currentIp, sysConfig.exec_expected_minimum_speed_mb)
+            if currentSpeed:
+                print(
+                    "Task complete, current ip: %s, speed:%sMB/s ,no need to continue"
+                    % (currentIp, currentSpeed))
+                return
         runRet = subprocess.run([BIN, "-o", RESULT_PATH],
                                 stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT,
